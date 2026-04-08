@@ -13,16 +13,7 @@ from lib.ZServer import *
 # (https://bitbucket.org/crimsondusk/pyskull)
 
 
-load_dotenv()
-token = os.getenv("DISCORD_TOKEN")
-
-# TODO only allow commands from the bot channel
-# TODO should probably use .env instead
-EUROBOROS_IP = "142.132.155.163"
-EUROBOROS_FIRST_PORT = 10666  # TSPG port starts at 10666 and seems to stop around 1720
-SERVERS_CATEGORY_NAME = "Servers"
-SERVER_BRAND = " (New & Best Brutal Doom WAD"
-
+# -- Bot init -------------------------------------------------------
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
 intents.messages = True
@@ -30,13 +21,43 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-loop_active: bool = False
+# -- Variables ------------------------------------------------------
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+EUROBOROS_IP = os.getenv("EUROBOROS_IP")
+EUROBOROS_FIRST_PORT = 10666  # TSPG port starts at 10666 and seems to stop around 1720
+SERVERS_CATEGORY_NAME = os.getenv("SERVERS_CATEGORY_NAME")
+SERVER_BRAND = os.getenv("SERVER_BRAND")
+
+abort = False
+
+if BOT_TOKEN is None:
+    print("Bot Token not found")
+    abort = True
+if EUROBOROS_IP is None:
+    print("Euroboros IP not found")
+    abort = True
+if SERVERS_CATEGORY_NAME is None:
+    print("Servers category name not found")
+    abort = True
+if SERVER_BRAND is None:
+    print("Server brand not found")
+    abort = True
+
+if abort:
+    print("Aborting ...")
+    quit()
+
+is_loop_active = False
 loop_timer: int = 60
 max_found_servers: int = 3
 max_queries: int = 60
 
 pinned_servers_port: set[int] = set()
 
+
+# -- Commands -------------------------------------------------------
 
 @bot.command()
 @commands.has_role("Admin")
@@ -153,12 +174,12 @@ async def update(ctx):
 @bot.command()
 @commands.has_role("Admin")
 async def start(ctx):
-    global loop_active
-    loop_active = True
+    global is_loop_active
+    is_loop_active = True
 
     await ctx.send("Starting the loop.")
 
-    while loop_active:
+    while is_loop_active:
         await update(ctx)
         await ctx.send(f"Next loop in {loop_timer // 60} minute.")
         await asyncio.sleep(loop_timer)
@@ -167,8 +188,8 @@ async def start(ctx):
 @bot.command()
 @commands.has_role("Admin")
 async def stop(ctx):
-    global loop_active
-    loop_active = False
+    global is_loop_active
+    is_loop_active = False
 
     await ctx.send("Stoping the loop.")
 
@@ -214,8 +235,10 @@ async def stop_error(ctx, error):
 
 @timer.error
 async def timer_error(ctx, error):
-    # TODO this isn't really an error !
-    await ctx.send(f"The timer must be between 1 and 10 minute(s).")
+    if isinstance(error, discord.ext.commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Usage : `!timer <minutes>`")
+    else:
+        await ctx.send(f"Error: {error}")
 
 
 @max_servers.error
@@ -234,17 +257,17 @@ async def info(ctx):
                    "!update      -> update the server list\n"
                    "!start       -> start an update loop\n"
                    "!stop        -> stops the loop\n"
-                   "!timer min   -> sets the timer duration\n"
-                   "!max_servers -> maximum number of servers\n```")
+                   "!timer <min>     -> sets the timer duration in minutes\n"
+                   "!max_servers <n> -> maximum number of servers\n```")
 
 
 @bot.event
 async def on_ready():
-    print("Bot Logged in as")
-    print(bot.user.name)
-    print(bot.user.id)
+    print("Bot Logged in")
     channel = bot.get_channel(1490092364478287933)
     await channel.send("Bot logged in\n")
 
 
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+# -- Main -----------------------------------------------------------
+
+bot.run(BOT_TOKEN, log_handler=handler, log_level=logging.DEBUG)
