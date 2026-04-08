@@ -1,0 +1,250 @@
+import asyncio
+import logging
+from datetime import datetime
+
+import discord
+from discord.ext import commands
+from dotenv import load_dotenv
+
+from lib.ZOutput import *
+from lib.ZServer import *
+
+# Huffman compression library provided by Alex Mayfield and Teemu Piipo - works a treat!
+# (https://bitbucket.org/crimsondusk/pyskull)
+
+
+load_dotenv()
+token = os.getenv("DISCORD_TOKEN")
+
+# TODO only allow commands from the bot channel
+# TODO should probably use .env instead
+EUROBOROS_IP = "142.132.155.163"
+EUROBOROS_FIRST_PORT = 10666  # TSPG port starts at 10666 and seems to stop around 1720
+SERVERS_CATEGORY_NAME = "Servers"
+SERVER_BRAND = " (New & Best Brutal Doom WAD"
+
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+loop_active: bool = False
+loop_timer: int = 60
+max_found_servers: int = 3
+max_queries: int = 60
+
+pinned_servers_port: set[int] = set()
+
+
+@bot.command()
+@commands.has_role("Admin")
+async def update(ctx):
+    await ctx.send(f"Querying {max_queries} potential servers\nThis might take a while...")
+
+    channels = await ctx.guild.fetch_channels()
+    servers_category = ""
+
+    for channel in channels:
+        if channel.name == SERVERS_CATEGORY_NAME:
+            servers_category = channel
+            print("Servers category found")
+
+        if SERVERS_CATEGORY_NAME in str(channel.category):
+            if "✅" in channel.name or "❌" in channel.name:
+                print(f'deleting {channel.name}')
+                await channel.delete()
+
+    # - Define which ports to query
+    # TODO : remove duplicated ports
+    await ctx.send(f"Pinned servers : {pinned_servers_port}")
+
+    port_list: list[int] = list(pinned_servers_port)
+
+    for port in range(EUROBOROS_FIRST_PORT, EUROBOROS_FIRST_PORT + max_queries):  # [10666, 10700]
+        port_list.append(port)
+
+    # - Query servers
+
+    found_servers: list[ZServer] = []
+    found_servers_nb = 0
+
+    for port in port_list:
+        if found_servers_nb >= max_found_servers:
+            await ctx.send("Break !")
+            break
+
+        server = ZServer(EUROBOROS_IP, port, ZCommon.DEFAULT_FLAGS)
+
+        try:
+            server.QueryServer(timeout=1)
+            server.ParseData()
+        except TimeoutError:
+            print("Server Timeout !")
+            continue
+        except Exception as e:
+            print(e)
+            continue
+
+        server_name: str = server.serverDict["%serverName%"]
+
+        if SERVER_BRAND in server_name:
+            found_servers.append(server)
+            pinned_servers_port.add(port)
+            found_servers_nb += 1
+
+    # - Sort by player count
+    def sort_func(serv: ZServer) -> int:
+        return serv.serverDict["%clientCount%"]
+
+    found_servers.sort(key=sort_func, reverse=True)
+
+    # - Get info from servers
+    embed = discord.Embed(
+        title=f"Found {found_servers_nb} of our servers !",
+        color=discord.Color.green()
+    )
+    embed.timestamp = datetime.now()
+
+    post_in_announcement = False
+
+    for server in found_servers:
+        player_count: int = server.serverDict["%clientCount%"]
+        current_map: str = server.serverDict["%serverMap%"]
+        server_name: str = server.serverDict["%serverName%"]
+        server_name = server_name.replace(SERVER_BRAND, "")
+        server_name = server_name[:-19]
+
+        symbol = "✅" if player_count > 0 else "❌"
+
+        channel_name = f'`{symbol}"᲼"{player_count}"᲼"play・{server_name}・{current_map}`'
+        channel = await ctx.guild.create_text_channel(channel_name, category=servers_category)
+
+        if player_count > 0:
+            post_in_announcement = True
+            message = ""
+
+            for player in server.players:
+                name = player.playerDict["%playerName%"]
+                score = player.playerDict["%playerScore%"]
+                ping = player.playerDict["%playerPing%"]
+                minutes = player.playerDict["%playerMinutes%"]
+                is_spectator = "- SPECTATOR" if player.playerDict["%playerSpectate%"] == True else ""
+
+                message += f" ╟═══  {name} - {score} pts - {minutes} min - {ping} ping {is_spectator}\n"
+
+            await channel.send(message)
+            embed.add_field(name=f'{symbol}・ {player_count} players ・ {server_name}・{current_map}\n',
+                            value=message, inline=False)
+        else:
+            embed.add_field(name=f'{symbol}・ {player_count} players ・ {server_name}・{current_map}\n',
+                            value="", inline=False)
+
+    announcements_channel = ctx.guild.get_channel(1491189582987788379)
+
+    if post_in_announcement:
+        msg = await announcements_channel.send(embed=embed)
+        await msg.publish()
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.has_role("Admin")
+async def start(ctx):
+    global loop_active
+    loop_active = True
+
+    await ctx.send("Starting the loop.")
+
+    while loop_active:
+        await update(ctx)
+        await ctx.send(f"Next loop in {loop_timer // 60} minute.")
+        await asyncio.sleep(loop_timer)
+
+
+@bot.command()
+@commands.has_role("Admin")
+async def stop(ctx):
+    global loop_active
+    loop_active = False
+
+    await ctx.send("Stoping the loop.")
+
+
+@bot.command()
+@commands.has_role("Admin")
+async def timer(ctx, minutes: int):
+    if 1 <= minutes <= 10:
+        global loop_timer
+        loop_timer = minutes * 60
+
+        await ctx.send(f"Timer is now {minutes} minute(s).")
+    else:
+        await ctx.send(f"The timer must be between 1 and 10 minute(s).")
+
+
+@bot.command()
+@commands.has_role("Admin")
+async def max_servers(ctx, value: int):
+    if 1 <= value <= 6:
+        global max_found_servers
+        max_found_servers = value
+
+        await ctx.send(f"max_found_servers is now {max_found_servers}.")
+    else:
+        await ctx.send(f"Between 1 and 6 servers max.")
+
+
+@update.error
+async def update_error(ctx, error):
+    await ctx.send(f"Error: {error}")
+
+
+@start.error
+async def start_error(ctx, error):
+    await ctx.send(f"Error: {error}")
+
+
+@stop.error
+async def stop_error(ctx, error):
+    await ctx.send(f"Error: {error}")
+
+
+@timer.error
+async def timer_error(ctx, error):
+    # TODO this isn't really an error !
+    await ctx.send(f"The timer must be between 1 and 10 minute(s).")
+
+
+@max_servers.error
+async def max_servers_error(ctx, error):
+    await ctx.send(f"Error: {error}")
+
+
+@bot.command()
+async def info(ctx):
+    await ctx.send("```Code base by Caboose / SkipGrub\n"
+                   "(https://zandronum.com/forum/viewtopic.php?t=9992)\n"
+                   "(https://gitlab.com/SkipGrube/zquery)\n"
+                   "\n"
+                   "Discord Bot by Edewaa\n"
+                   "\n"
+                   "!update      -> update the server list\n"
+                   "!start       -> start an update loop\n"
+                   "!stop        -> stops the loop\n"
+                   "!timer min   -> sets the timer duration\n"
+                   "!max_servers -> maximum number of servers\n```")
+
+
+@bot.event
+async def on_ready():
+    print("Bot Logged in as")
+    print(bot.user.name)
+    print(bot.user.id)
+    channel = bot.get_channel(1490092364478287933)
+    await channel.send("Bot logged in\n")
+
+
+bot.run(token, log_handler=handler, log_level=logging.DEBUG)
