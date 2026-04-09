@@ -1,12 +1,10 @@
-import asyncio
-import logging
+import asyncio, logging, os
 from datetime import datetime
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from lib.ZOutput import *
 from lib.ZServer import *
 
 # -- Bot init -------------------------------------------------------
