@@ -9,10 +9,6 @@ from dotenv import load_dotenv
 from lib.ZOutput import *
 from lib.ZServer import *
 
-# Huffman compression library provided by Alex Mayfield and Teemu Piipo - works a treat!
-# (https://bitbucket.org/crimsondusk/pyskull)
-
-
 # -- Bot init -------------------------------------------------------
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -25,21 +21,25 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-EUROBOROS_IP = os.getenv("EUROBOROS_IP")
-EUROBOROS_FIRST_PORT = 10666  # TSPG port starts at 10666 and seems to stop around 1720
+ANNOUNCEMENT_CHANNEL_ID = os.getenv("ANNOUNCEMENT_CHANNEL_ID")
 SERVERS_CATEGORY_NAME = os.getenv("SERVERS_CATEGORY_NAME")
+EUROBOROS_IP = os.getenv("EUROBOROS_IP")
 SERVER_BRAND = os.getenv("SERVER_BRAND")
+EUROBOROS_FIRST_PORT = 10666  # TSPG port starts at 10666 and seems to stop around 1720
 
 abort = False
 
 if BOT_TOKEN is None:
     print("Bot Token not found")
     abort = True
-if EUROBOROS_IP is None:
-    print("Euroboros IP not found")
+if ANNOUNCEMENT_CHANNEL_ID is None:
+    print("Announcement Channel id not found")
     abort = True
 if SERVERS_CATEGORY_NAME is None:
     print("Servers category name not found")
+    abort = True
+if EUROBOROS_IP is None:
+    print("Euroboros IP not found")
     abort = True
 if SERVER_BRAND is None:
     print("Server brand not found")
@@ -49,12 +49,18 @@ if abort:
     print("Aborting ...")
     quit()
 
+assert BOT_TOKEN
+assert ANNOUNCEMENT_CHANNEL_ID
+
+ANNOUNCEMENT_CHANNEL_ID = int(ANNOUNCEMENT_CHANNEL_ID)
+
 is_loop_active = False
-loop_timer: int = 60
+loop_timer: int = 10 * 60  # 10 minutes
 max_found_servers: int = 3
 max_queries: int = 60
 
 pinned_servers_port: set[int] = set()
+last_post_had_players = True
 
 
 # -- Commands -------------------------------------------------------
@@ -62,10 +68,19 @@ pinned_servers_port: set[int] = set()
 @bot.command()
 @commands.has_role("Admin")
 async def update(ctx):
+    assert SERVERS_CATEGORY_NAME
+    assert SERVER_BRAND
+    assert EUROBOROS_IP
+    assert SERVER_BRAND
+
+    global last_post_had_players
+
     await ctx.send(f"Querying {max_queries} potential servers\nThis might take a while...")
 
     channels = await ctx.guild.fetch_channels()
     servers_category = ""
+
+    # TODO: edit already existing channels is possible instead of removing them all
 
     for channel in channels:
         if channel.name == SERVERS_CATEGORY_NAME:
@@ -78,7 +93,7 @@ async def update(ctx):
                 await channel.delete()
 
     # - Define which ports to query
-    # TODO : remove duplicated ports
+    # TODO : remove duplicated ports already in the pinned servers
     await ctx.send(f"Pinned servers : {pinned_servers_port}")
 
     port_list: list[int] = list(pinned_servers_port)
@@ -87,12 +102,10 @@ async def update(ctx):
         port_list.append(port)
 
     # - Query servers
-
     found_servers: list[ZServer] = []
-    found_servers_nb = 0
 
     for port in port_list:
-        if found_servers_nb >= max_found_servers:
+        if len(found_servers) >= max_found_servers:
             await ctx.send("Break !")
             break
 
@@ -111,24 +124,25 @@ async def update(ctx):
         server_name: str = server.serverDict["%serverName%"]
 
         if SERVER_BRAND in server_name:
-            found_servers.append(server)
             pinned_servers_port.add(port)
-            found_servers_nb += 1
+            found_servers.append(server)
+        else:
+            if port in pinned_servers_port:
+                pinned_servers_port.remove(port)
 
     # - Sort by player count
-    def sort_func(serv: ZServer) -> int:
-        return serv.serverDict["%clientCount%"]
-
-    found_servers.sort(key=sort_func, reverse=True)
+    sort_function = lambda serv: serv.serverDict["%clientCount%"]
+    found_servers.sort(key=sort_function, reverse=True)
 
     # - Get info from servers
-    embed = discord.Embed(
-        title=f"Found {found_servers_nb} of our servers !",
-        color=discord.Color.green()
-    )
-    embed.timestamp = datetime.now()
-
+    announcements_channel = ctx.guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
     post_in_announcement = False
+
+    embed = discord.Embed(
+        title=f"{len(found_servers)} servers found !",
+        color=discord.Color.green(),
+        timestamp=datetime.now()
+    )
 
     for server in found_servers:
         player_count: int = server.serverDict["%clientCount%"]
@@ -137,36 +151,36 @@ async def update(ctx):
         server_name = server_name.replace(SERVER_BRAND, "")
         server_name = server_name[:-19]
 
+        message = ""
         symbol = "✅" if player_count > 0 else "❌"
 
         channel_name = f'`{symbol}"᲼"{player_count}"᲼"play・{server_name}・{current_map}`'
         channel = await ctx.guild.create_text_channel(channel_name, category=servers_category)
 
         if player_count > 0:
-            post_in_announcement = True
-            message = ""
-
             for player in server.players:
                 name = player.playerDict["%playerName%"]
-                score = player.playerDict["%playerScore%"]
                 ping = player.playerDict["%playerPing%"]
+                score = player.playerDict["%playerScore%"]
                 minutes = player.playerDict["%playerMinutes%"]
-                is_spectator = "- SPECTATOR" if player.playerDict["%playerSpectate%"] == True else ""
+                spectator = "- SPECTATOR" if player.playerDict["%playerSpectate%"] == True else ""
 
-                message += f" ╟═══  {name} - {score} pts - {minutes} min - {ping} ping {is_spectator}\n"
+                message += f" ╟═══  {name} - {score} pts - {minutes} min - {ping} ping {spectator}\n"
 
+            post_in_announcement = True
             await channel.send(message)
-            embed.add_field(name=f'{symbol}・ {player_count} players ・ {server_name}・{current_map}\n',
-                            value=message, inline=False)
-        else:
-            embed.add_field(name=f'{symbol}・ {player_count} players ・ {server_name}・{current_map}\n',
-                            value="", inline=False)
 
-    announcements_channel = ctx.guild.get_channel(1491189582987788379)
+        embed.add_field(name=f'{symbol}・ {player_count} player(s) ・ {server_name}・{current_map}\n',
+                        value=message, inline=False)
 
     if post_in_announcement:
-        msg = await announcements_channel.send(embed=embed)
-        await msg.publish()
+        message = await announcements_channel.send(embed=embed)
+        await message.publish()
+        last_post_had_players = True
+    elif last_post_had_players:
+        message = await announcements_channel.send(embed=embed)
+        await message.publish()
+        last_post_had_players = False
 
     await ctx.send(embed=embed)
 
@@ -181,7 +195,7 @@ async def start(ctx):
 
     while is_loop_active:
         await update(ctx)
-        await ctx.send(f"Next loop in {loop_timer // 60} minute.")
+        await ctx.send(f"Next loop in {loop_timer // 60} minute(s).")
         await asyncio.sleep(loop_timer)
 
 
@@ -197,13 +211,14 @@ async def stop(ctx):
 @bot.command()
 @commands.has_role("Admin")
 async def timer(ctx, minutes: int):
-    if 1 <= minutes <= 10:
+    # Discord only allows 10 messages to be published in an announcement channel per hour
+    if 6 <= minutes <= 10:
         global loop_timer
         loop_timer = minutes * 60
 
         await ctx.send(f"Timer is now {minutes} minute(s).")
     else:
-        await ctx.send(f"The timer must be between 1 and 10 minute(s).")
+        await ctx.send(f"The timer must be between 6 and 10 minute(s).")
 
 
 @bot.command()
@@ -220,12 +235,18 @@ async def max_servers(ctx, value: int):
 
 @update.error
 async def update_error(ctx, error):
-    await ctx.send(f"Error: {error}")
+    if isinstance(error, discord.DiscordServerError):
+        await ctx.send(f"Discord server error in Update !\n=====\nError: {error}\n=====")
+    else:
+        await ctx.send(f"Error: {error}")
 
 
 @start.error
 async def start_error(ctx, error):
-    await ctx.send(f"Error: {error}")
+    if isinstance(error, discord.DiscordServerError):
+        await ctx.send(f"Discord server error in Start !\n=====\nError: {error}\n=====")
+    else:
+        await ctx.send(f"Error: {error}")
 
 
 @stop.error
@@ -236,7 +257,7 @@ async def stop_error(ctx, error):
 @timer.error
 async def timer_error(ctx, error):
     if isinstance(error, discord.ext.commands.errors.MissingRequiredArgument):
-        await ctx.send(f"Usage : `!timer <minutes>`")
+        await ctx.send(f"Usage : `!timer <minutes>`\nCurrent value : {loop_timer // 60} minutes")
     else:
         await ctx.send(f"Error: {error}")
 
@@ -264,8 +285,6 @@ async def info(ctx):
 @bot.event
 async def on_ready():
     print("Bot Logged in")
-    channel = bot.get_channel(1490092364478287933)
-    await channel.send("Bot logged in\n")
 
 
 # -- Main -----------------------------------------------------------
