@@ -1,7 +1,7 @@
 # ZQueryDiscordBot
 
 ## Credits
-Code base by Caboose / SkipGrub<br>
+Code base by Caboose / SkipGrub (Licensed under the GNU GPLv3 license)<br>
 (https://zandronum.com/forum/viewtopic.php?t=9992)<br>
 (https://gitlab.com/SkipGrube/zquery)
 
@@ -13,7 +13,7 @@ This is a discord bot that displays the state of a specific set of servers,<br>
 such as which players are connected, their score, ping, time...
 
 ## Setup
-You need to create a discord bot first, and give it the proper intents permissions:
+You need to create a discord bot first, and give it the proper intents permissions:<br>
 https://discord.com/developers/applications
 
 You'll need to create a `.env` file containing these variables :
